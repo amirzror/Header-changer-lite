@@ -3,31 +3,316 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { font-family: Arial, sans-serif; width: 390px; padding: 12px; margin: 0; background-color: #f9f9f9; }
-    h3 { margin-top: 0; color: #333; margin-bottom: 4px; }
-    .header-container-wrapper { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-    .status-badge { font-size: 11px; color: #28a745; background-color: #e8f5e9; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
-    .save-status { font-size: 11px; color: #666; font-style: italic; }
-    .header-row { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; }
-    .header-row.disabled input { opacity: 0.5; }
-    .toggle-chk { width: 18px; height: 18px; cursor: pointer; margin: 0; }
-    input[type="text"] { flex: 1; padding: 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
-    button { padding: 6px 10px; cursor: pointer; font-size: 13px; border-radius: 4px; }
-    .delete-btn { background-color: #ff4d4d; color: white; border: none; }
-    .add-btn { width: 100%; margin-top: 8px; background-color: #007bff; color: white; border: 1px solid #0069d9; font-weight: bold; }
-    .add-btn:hover { background-color: #0069d9; }
+    :root {
+      --bg: #f4f5fb;
+      --card: #ffffff;
+      --text: #1e2233;
+      --muted: #7c8199;
+      --border: #e4e6f0;
+      --accent: #6366f1;
+      --accent-hover: #4f46e5;
+      --accent-soft: #eef0fe;
+      --danger: #f43f5e;
+      --ok: #10b981;
+      --ok-soft: #e7f8f1;
+      --shadow: 0 8px 24px rgba(40, 44, 82, 0.08);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14151c;
+        --card: #1c1e28;
+        --text: #eceef6;
+        --muted: #9195ad;
+        --border: #2c2f3d;
+        --accent: #818cf8;
+        --accent-hover: #a5b0ff;
+        --accent-soft: #262a3f;
+        --danger: #fb7185;
+        --ok: #34d399;
+        --ok-soft: #16281f;
+        --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      width: 480px;
+      padding: 14px;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    h3 {
+      margin: 0 0 2px;
+      font-size: 16px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    .title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .options-btn {
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      font-size: 15px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      border-radius: 7px;
+    }
+
+    .options-btn:hover { background: var(--accent-soft); color: var(--accent); }
+
+    .header-container-wrapper {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .status-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 4px 10px;
+      border-radius: 999px;
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .save-status {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .save-status::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+
+    #groups-container {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* A domain group is the card; header rows inside it are lightweight. */
+    .group {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+    }
+
+    .group-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .group-globe { font-size: 14px; flex: 0 0 auto; }
+
+    .group-domain {
+      flex: 1 1 auto;
+      font-weight: 600;
+    }
+
+    .del-group-btn {
+      flex: 0 0 auto;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      font-size: 14px;
+      background: transparent;
+      color: var(--muted);
+      border: none;
+    }
+
+    .del-group-btn:hover { background: rgba(244, 63, 94, 0.12); color: var(--danger); }
+
+    .group-hint {
+      font-size: 11px;
+      color: var(--muted);
+      margin: 6px 2px 9px;
+      line-height: 1.4;
+    }
+
+    .group-hint.ok { color: var(--accent); }
+    .group-hint.warn { color: var(--danger); }
+
+    .group-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .add-header-btn {
+      margin-top: 8px;
+      padding: 5px 11px;
+      font-size: 12px;
+      font-weight: 600;
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: none;
+      border-radius: 7px;
+    }
+
+    .add-header-btn:hover { filter: brightness(0.97); }
+
+    .header-row {
+      display: flex;
+      gap: 7px;
+      align-items: center;
+      transition: opacity 0.15s ease;
+    }
+
+    .header-row.disabled { opacity: 0.5; }
+    .header-row.disabled input[type="text"] { color: var(--muted); }
+
+    /* Custom toggle switch built from the existing checkbox */
+    .toggle-chk {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      width: 30px;
+      height: 18px;
+      flex: 0 0 auto;
+      margin: 0;
+      border-radius: 999px;
+      background: var(--border);
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .toggle-chk::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      transition: transform 0.2s ease;
+    }
+
+    .toggle-chk:checked { background: var(--accent); }
+    .toggle-chk:checked::after { transform: translateX(12px); }
+    .toggle-chk:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    input[type="text"] {
+      min-width: 0;
+      padding: 6px 9px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 13px;
+      background: var(--bg);
+      color: var(--text);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    /* Shorter key field, longer value field */
+    .header-name { flex: 0 1 130px; }
+    .header-value { flex: 1 1 auto; }
+
+    input[type="text"]::placeholder { color: var(--muted); }
+
+    input[type="text"]:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+      background: var(--card);
+    }
+
+    button {
+      cursor: pointer;
+      font-size: 13px;
+      border-radius: 8px;
+      font-family: inherit;
+      transition: background 0.15s ease, transform 0.05s ease, color 0.15s ease;
+    }
+
+    button:active { transform: scale(0.97); }
+
+    .delete-btn {
+      flex: 0 0 auto;
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      font-size: 14px;
+      line-height: 1;
+      background: transparent;
+      color: var(--muted);
+      border: none;
+    }
+
+    .delete-btn:hover { background: rgba(244, 63, 94, 0.12); color: var(--danger); }
+
+    .add-btn {
+      width: 100%;
+      margin-top: 10px;
+      padding: 8px;
+      font-size: 13px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      font-weight: 600;
+      box-shadow: 0 3px 10px rgba(99, 102, 241, 0.28);
+    }
+
+    .add-btn:hover { background: var(--accent-hover); }
   </style>
 </head>
 <body>
-  <h3>Request Headers</h3>
+  <div class="title-row">
+    <h3>Request Headers</h3>
+    <button id="options-btn" class="options-btn" title="Options">&#9881;</button>
+  </div>
   <div class="header-container-wrapper">
     <div id="status" class="status-badge">Detecting tab...</div>
     <div id="save-status" class="save-status">Ready</div>
   </div>
-  
-  <div id="headers-container"></div>
-  <button id="add-row-btn" class="add-btn">+ Add New Header</button>
 
+  <div id="groups-container"></div>
+  <button id="add-group-btn" class="add-btn">+ Add Domain Group</button>
+
+  <!-- Autocomplete sources: known header names + saved past values -->
+  <datalist id="known-headers"></datalist>
+  <datalist id="known-values"></datalist>
+
+  <script src="rules.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Header Changer — Options</title>
+  <style>
+    :root {
+      --bg: #f4f5fb;
+      --card: #ffffff;
+      --text: #1e2233;
+      --muted: #7c8199;
+      --border: #e4e6f0;
+      --accent: #6366f1;
+      --accent-soft: #eef0fe;
+      --ok: #10b981;
+      --danger: #f43f5e;
+      --shadow: 0 8px 24px rgba(40, 44, 82, 0.08);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14151c;
+        --card: #1c1e28;
+        --text: #eceef6;
+        --muted: #9195ad;
+        --border: #2c2f3d;
+        --accent: #818cf8;
+        --accent-soft: #262a3f;
+        --ok: #34d399;
+        --danger: #fb7185;
+        --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      width: 440px;
+      padding: 20px;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    h1 {
+      margin: 0 0 16px;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    .option-card {
+      display: flex;
+      align-items: flex-start;
+      gap: 14px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .option-text { flex: 1; }
+
+    .option-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .option-desc {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    /* Toggle switch */
+    .switch {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      width: 42px;
+      height: 24px;
+      flex: 0 0 auto;
+      margin: 2px 0 0;
+      border-radius: 999px;
+      background: var(--border);
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      transition: transform 0.2s ease;
+    }
+
+    .switch:checked { background: var(--accent); }
+    .switch:checked::after { transform: translateX(18px); }
+    .switch:disabled { opacity: 0.5; cursor: default; }
+    .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    #status {
+      margin-top: 14px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 16px;
+    }
+
+    #status.ok { color: var(--ok); }
+    #status.warn { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <h1>Header Changer — Options</h1>
+
+  <div class="option-card">
+    <div class="option-text">
+      <div class="option-title">Apply headers to all tabs</div>
+      <div class="option-desc">
+        By default headers are only modified for the active tab. Enable this to
+        apply your headers to every tab, including background and non-active tabs.
+        Chrome will ask for permission to read and change data on all sites.
+        Domain groups you set up in the popup take effect across all tabs while
+        this is on.
+      </div>
+    </div>
+    <input type="checkbox" id="all-tabs-toggle" class="switch">
+  </div>
+
+  <div id="status"></div>
+
+  <script src="rules.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
