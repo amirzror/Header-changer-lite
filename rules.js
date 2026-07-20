@@ -10,8 +10,9 @@ const RESOURCE_TYPES = [
 const ALL_TABS_ORIGINS = { origins: ["<all_urls>"] };
 
 // Pseudo-header. Instead of being sent on the wire, it rewrites the port of the
-// outgoing request (via a declarativeNetRequest redirect). Only honored when a
-// concrete domain is set on the group — never for the "all sites" group.
+// outgoing request. The rewrite happens in-page (patch.js overrides fetch/XHR),
+// not via a redirect — see buildRulesFromGroups. Only honored when a concrete
+// domain is set on the group — never for the "all sites" group.
 const PORT_HEADER = '__port';
 
 // A pseudo/reserved header controls the extension rather than being sent as an
@@ -20,11 +21,20 @@ function isReservedHeader(name) {
   return String(name || '').trim().toLowerCase() === PORT_HEADER;
 }
 
-// Map stored header entries to declarativeNetRequest modifyHeaders specs.
+// A valid HTTP header name is an RFC 7230 "token". Anything else — a space, a
+// colon, a partially-typed name — makes declarativeNetRequest reject the ENTIRE
+// updateSessionRules call ("must specify a valid header name"), which would other-
+// wise throw in saveAndApply and, with "apply to all tabs" on, at worker startup.
+function isValidHeaderName(name) {
+  return /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(String(name || ''));
+}
+
+// Map stored header entries to declarativeNetRequest modifyHeaders specs. Skips
+// reserved (__port) and malformed names, and coerces the value to a string.
 function buildRequestHeaders(headers) {
   return (headers || [])
-    .filter(h => h.enabled && h.name && !isReservedHeader(h.name))
-    .map(h => ({ header: h.name, operation: 'set', value: h.value }));
+    .filter(h => h.enabled && h.name && !isReservedHeader(h.name) && isValidHeaderName(h.name))
+    .map(h => ({ header: h.name, operation: 'set', value: String(h.value == null ? '' : h.value) }));
 }
 
 // Pull a valid port (1-65535) from an enabled __port header, or null.
@@ -38,12 +48,6 @@ function getPortOverride(headers) {
   const n = Number(port);
   if (n < 1 || n > 65535) return null;
   return port;
-}
-
-// Host-permission origins needed to redirect (port-rewrite) a domain and its
-// subdomains, since requestDomains matching also covers subdomains.
-function portOrigins(domain) {
-  return { origins: [`*://${domain}/*`, `*://*.${domain}/*`] };
 }
 
 // Clean up whatever the user typed/pasted into a domain field:
@@ -95,21 +99,10 @@ function buildRulesFromGroups(groups, { tabId = null } = {}) {
       });
     }
 
-    // __port: rewrite the request's port via a redirect. Requires a concrete
-    // domain (redirecting every host would be far too broad) and the matching
-    // host permission, which the popup requests before this rule can fire.
-    const port = getPortOverride(group.headers);
-    if (port && domain) {
-      const condition = { resourceTypes: RESOURCE_TYPES, requestDomains: [domain] };
-      if (tabId != null) condition.tabIds = [tabId];
-
-      rules.push({
-        id: id++,
-        priority: 1,
-        action: { type: 'redirect', redirect: { transform: { port } } },
-        condition
-      });
-    }
+    // __port is handled in-page by patch.js (a fetch/XHR URL rewrite), not here.
+    // A declarativeNetRequest redirect can't change the port for cross-origin
+    // XHR: the resulting 307 fails the CORS check because it carries no
+    // Access-Control-Allow-Origin, and the browser aborts the request.
   });
   return rules;
 }

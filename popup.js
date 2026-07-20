@@ -301,30 +301,53 @@ async function updatePortNotice(groupEl) {
     return;
   }
 
-  const origins = portOrigins(domain);
-  const { applyToAllTabs } = await chrome.storage.local.get(['applyToAllTabs']);
-  const granted = applyToAllTabs
-    ? await chrome.permissions.contains(ALL_TABS_ORIGINS)
-    : await chrome.permissions.contains(origins);
+  // The port rewrite runs in the page that MAKES the requests — the app you're
+  // viewing — so we inject only on the current tab's origin, with its permission.
+  if (!currentHost) {
+    notice.textContent = `Open your app’s tab, then reopen this popup to send ${domain} requests to port ${port}.`;
+    notice.className = 'port-notice warn';
+    notice.style.display = 'block';
+    return;
+  }
 
-  if (granted) {
-    notice.textContent = `✓ Requests to ${domain} are redirected to port ${port}.`;
+  // "active" = we both hold the host permission AND have recorded it for injection.
+  // Holding the permission alone is not enough — the content script must be registered.
+  const origin = { origins: [`*://${currentHost}/*`] };
+  const hasPerm = await chrome.permissions.contains(origin);
+  const { portInjectHosts } = await chrome.storage.local.get('portInjectHosts');
+  const active = hasPerm && Array.isArray(portInjectHosts) && portInjectHosts.includes(currentHost);
+
+  if (active) {
+    notice.textContent = `✓ On ${currentHost}, requests to ${domain} are sent to port ${port}. (Reload the tab if it’s already open.)`;
     notice.className = 'port-notice ok';
     notice.style.display = 'block';
     return;
   }
 
   const txt = document.createElement('span');
-  txt.textContent = `Rewriting ${domain} to port ${port} needs permission. `;
+  txt.textContent = `Send ${domain} requests to port ${port} while using this app? `;
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'grant-btn';
-  btn.textContent = 'Grant';
-  // permissions.request must be the first call in the gesture handler, so no
-  // awaits precede it here.
+  // "Grant" when a prompt is needed; "Enable" when the permission is already held.
+  btn.textContent = hasPerm ? `Enable on ${currentHost}` : `Grant on ${currentHost}`;
   btn.addEventListener('click', () => {
-    chrome.permissions.request(origins).then(async (ok) => {
-      if (ok) await saveAndApply();
+    // permissions.request must be the first call in the gesture handler. If a prompt
+    // is shown it closes the popup and the code below may not run — the background's
+    // permissions.onAdded handler is the safety net for that case. When the permission
+    // is already held, no prompt shows, the popup survives, and this path records the
+    // host, waits for registration, then reloads the tab.
+    chrome.permissions.request(origin).then(async (ok) => {
+      if (ok) {
+        const cur = (await chrome.storage.local.get('portInjectHosts')).portInjectHosts;
+        const list = Array.isArray(cur) ? cur : [];
+        if (!list.includes(currentHost)) {
+          list.push(currentHost);
+          await chrome.storage.local.set({ portInjectHosts: list });
+        }
+        await chrome.runtime.sendMessage({ type: 'reconcilePortScripts' });
+        if (currentTabId != null) chrome.tabs.reload(currentTabId);
+      }
       updatePortNotice(groupEl);
     });
   });
