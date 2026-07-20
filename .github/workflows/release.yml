@@ -1,0 +1,104 @@
+name: Release
+
+# Cuts a dated tag (vYYYY.MM.DD) and a GitHub Release containing the packaged
+# extension. Runs on every merge to main, or on demand from the Actions tab.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Stage only the files that belong inside the extension — no repo/dev cruft.
+      - name: Stage extension files
+        run: |
+          mkdir -p dist
+          rsync -a \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude '.idea' \
+            --exclude '.DS_Store' \
+            --exclude '.gitignore' \
+            --exclude 'dist' \
+            --exclude '*.zip' \
+            --exclude '*.crx' \
+            --exclude '*.pem' \
+            --exclude '*.md' \
+            ./ dist/
+          echo "Packaged files:" && find dist -type f | sort
+
+      # Date-based tag. If a release already exists for today (e.g. two merges in
+      # one day), append -2, -3, ... so we never collide.
+      - name: Determine tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(date -u +'%Y.%m.%d')"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            n=2
+            while gh release view "${TAG}-${n}" >/dev/null 2>&1; do n=$((n+1)); done
+            TAG="${TAG}-${n}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      - name: Build zip
+        run: |
+          ( cd dist && zip -r "../HeaderChangerLite-${{ steps.tag.outputs.tag }}.zip" . )
+
+      - name: Set up Chrome (for .crx packing)
+        id: setup-chrome
+        continue-on-error: true
+        uses: browser-actions/setup-chrome@v1
+
+      # Best-effort .crx. Set a repo secret CRX_PRIVATE_KEY (a PEM private key) to
+      # keep a stable extension ID across releases; otherwise Chrome mints a throw-
+      # away key each run and the .crx ID will differ every time.
+      - name: Build crx
+        id: crx
+        continue-on-error: true
+        env:
+          CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
+        run: |
+          set -e
+          if [ -z "$CHROME_PATH" ]; then
+            echo "::warning::Chrome unavailable — skipping .crx, releasing zip only."
+            exit 1
+          fi
+          if [ -n "$CRX_PRIVATE_KEY" ]; then
+            printf '%s' "$CRX_PRIVATE_KEY" > key.pem
+            "$CHROME_PATH" --no-sandbox --pack-extension="$PWD/dist" --pack-extension-key="$PWD/key.pem"
+          else
+            echo "::warning::No CRX_PRIVATE_KEY secret — Chrome generated a throwaway key; the .crx extension ID will change every run."
+            "$CHROME_PATH" --no-sandbox --pack-extension="$PWD/dist"
+          fi
+          mv dist.crx "HeaderChangerLite-${{ steps.tag.outputs.tag }}.crx"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          FILES=( "HeaderChangerLite-${TAG}.zip" )
+          if [ -f "HeaderChangerLite-${TAG}.crx" ]; then
+            FILES+=( "HeaderChangerLite-${TAG}.crx" )
+          else
+            echo "No .crx produced — release will include the zip only."
+          fi
+          gh release create "$TAG" "${FILES[@]}" \
+            --title "$TAG" \
+            --target "$GITHUB_SHA" \
+            --generate-notes
