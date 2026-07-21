@@ -10,9 +10,10 @@ const RESOURCE_TYPES = [
 const ALL_TABS_ORIGINS = { origins: ["<all_urls>"] };
 
 // Pseudo-header. Instead of being sent on the wire, it rewrites the port of the
-// outgoing request. The rewrite happens in-page (patch.js overrides fetch/XHR),
-// not via a redirect — see buildRulesFromGroups. Only honored when a concrete
-// domain is set on the group — never for the "all sites" group.
+// outgoing request, two ways depending on request type:
+//   - fetch/XHR  -> rewritten in-page by patch.js (a redirect would break CORS).
+//   - navigations-> declarativeNetRequest redirect (see buildRulesFromGroups).
+// Only honored when a concrete domain is set on the group — never for "all sites".
 const PORT_HEADER = '__port';
 
 // A pseudo/reserved header controls the extension rather than being sent as an
@@ -48,6 +49,13 @@ function getPortOverride(headers) {
   const n = Number(port);
   if (n < 1 || n > 65535) return null;
   return port;
+}
+
+// Host-permission origins needed to redirect (port-rewrite) NAVIGATIONS to a domain
+// and its subdomains. declarativeNetRequest's redirect action requires host
+// permission for the request being redirected.
+function portOrigins(domain) {
+  return { origins: [`*://${domain}/*`, `*://*.${domain}/*`] };
 }
 
 // Clean up whatever the user typed/pasted into a domain field:
@@ -99,21 +107,59 @@ function buildRulesFromGroups(groups, { tabId = null } = {}) {
       });
     }
 
-    // __port is handled in-page by patch.js (a fetch/XHR URL rewrite), not here.
-    // A declarativeNetRequest redirect can't change the port for cross-origin
-    // XHR: the resulting 307 fails the CORS check because it carries no
-    // Access-Control-Allow-Origin, and the browser aborts the request.
+    // __port NAVIGATION redirects are NOT built here. They are a separate, global,
+    // persistent rule set (buildPortRedirectRules / applyPortRedirectRules) managed
+    // by the background worker — because a navigation can happen in any tab and must
+    // survive independently of the active-tab header rules. fetch/XHR are handled
+    // in-page by patch.js.
   });
   return rules;
 }
 
-// Replace all of our session rules with a fresh set (this extension owns every
-// session rule it creates, so clearing them all is safe and avoids id bookkeeping).
+// Header rules use ids 1..N; __port navigation-redirect rules live in a separate high
+// id range so the two sets can be managed independently on the shared session-rule set.
+const PORT_RULE_ID_BASE = 100000;
+
+// Build the __port NAVIGATION redirect rules: global (no tab scoping) and limited to
+// main_frame/sub_frame so they never touch fetch/XHR (which patch.js rewrites in-page;
+// a redirect there would break CORS). Added unconditionally — Chrome silently ignores
+// a redirect rule for a domain the extension lacks host permission for, so the rule
+// simply starts firing once the user grants that domain.
+function buildPortRedirectRules(groups) {
+  const rules = [];
+  let id = PORT_RULE_ID_BASE;
+  (groups || []).forEach(group => {
+    if (group.enabled === false) return;
+    const domain = normalizeDomain(group.domain);
+    if (!domain || !isValidDomain(domain)) return;
+    const port = getPortOverride(group.headers);
+    if (!port) return;
+    rules.push({
+      id: id++,
+      priority: 1,
+      action: { type: 'redirect', redirect: { transform: { port } } },
+      condition: { resourceTypes: ['main_frame', 'sub_frame'], requestDomains: [domain] }
+    });
+  });
+  return rules;
+}
+
+// Replace the HEADER session rules (ids < PORT_RULE_ID_BASE), leaving the __port
+// navigation-redirect rules untouched.
 async function applyRules(rules) {
   const existing = await chrome.declarativeNetRequest.getSessionRules();
+  const headerIds = existing.filter(r => r.id < PORT_RULE_ID_BASE).map(r => r.id);
+  await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: headerIds, addRules: rules });
+}
+
+// Replace the __port navigation-redirect rules (ids >= PORT_RULE_ID_BASE), leaving the
+// header rules untouched.
+async function applyPortRedirectRules(groups) {
+  const existing = await chrome.declarativeNetRequest.getSessionRules();
+  const portIds = existing.filter(r => r.id >= PORT_RULE_ID_BASE).map(r => r.id);
   await chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: existing.map(r => r.id),
-    addRules: rules
+    removeRuleIds: portIds,
+    addRules: buildPortRedirectRules(groups),
   });
 }
 

@@ -310,22 +310,26 @@ async function updatePortNotice(groupEl) {
     return;
   }
 
-  // "active" = we both hold the host permission AND have recorded it for injection.
-  // Holding the permission alone is not enough — the content script must be registered.
-  const origin = { origins: [`*://${currentHost}/*`] };
-  const hasPerm = await chrome.permissions.contains(origin);
+  // The rewrite has two halves, each needing its own permission:
+  //  - fetch/XHR  → a content script on the APP host (currentHost); tracked in portInjectHosts.
+  //  - navigations→ a declarativeNetRequest redirect, needing host permission for the
+  //                 API DOMAIN itself (portOrigins).
+  // We request both in one prompt so a single Grant covers direct visits too.
+  const appOrigin = `*://${currentHost}/*`;
+  const needed = { origins: [appOrigin, ...portOrigins(domain).origins] };
+  const hasPerm = await chrome.permissions.contains(needed);
   const { portInjectHosts } = await chrome.storage.local.get('portInjectHosts');
   const active = hasPerm && Array.isArray(portInjectHosts) && portInjectHosts.includes(currentHost);
 
   if (active) {
-    notice.textContent = `✓ On ${currentHost}, requests to ${domain} are sent to port ${port}. (Reload the tab if it’s already open.)`;
+    notice.textContent = `✓ On ${currentHost}, requests to ${domain} go to port ${port} — including direct visits. (Reload the tab if it’s already open.)`;
     notice.className = 'port-notice ok';
     notice.style.display = 'block';
     return;
   }
 
   const txt = document.createElement('span');
-  txt.textContent = `Send ${domain} requests to port ${port} while using this app? `;
+  txt.textContent = `Send ${domain} requests (and direct visits) to port ${port} while using this app? `;
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'grant-btn';
@@ -335,9 +339,8 @@ async function updatePortNotice(groupEl) {
     // permissions.request must be the first call in the gesture handler. If a prompt
     // is shown it closes the popup and the code below may not run — the background's
     // permissions.onAdded handler is the safety net for that case. When the permission
-    // is already held, no prompt shows, the popup survives, and this path records the
-    // host, waits for registration, then reloads the tab.
-    chrome.permissions.request(origin).then(async (ok) => {
+    // is already held, no prompt shows, the popup survives, and this path finishes up.
+    chrome.permissions.request(needed).then(async (ok) => {
       if (ok) {
         const cur = (await chrome.storage.local.get('portInjectHosts')).portInjectHosts;
         const list = Array.isArray(cur) ? cur : [];
@@ -345,7 +348,8 @@ async function updatePortNotice(groupEl) {
           list.push(currentHost);
           await chrome.storage.local.set({ portInjectHosts: list });
         }
-        await chrome.runtime.sendMessage({ type: 'reconcilePortScripts' });
+        await chrome.runtime.sendMessage({ type: 'reconcilePortScripts' }); // XHR content script
+        await saveAndApply();                                               // navigation redirect (DNR)
         if (currentTabId != null) chrome.tabs.reload(currentTabId);
       }
       updatePortNotice(groupEl);
