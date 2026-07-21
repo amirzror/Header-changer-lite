@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Header changer Lite2",
-  "version": "1.0",
+  "version": "1.1",
   "description": "Modifies HTTP request headers for the active tab only.",
   "permissions": [
     "declarativeNetRequest",
     "storage",
-    "activeTab"
+    "activeTab",
+    "scripting"
   ],
   "optional_host_permissions": [
     "<all_urls>"
@@ -15,13 +16,6 @@
     "page": "options.html",
     "open_in_tab": false
   },
-    "default_icon": {
-      "16": "icon16.png",
-      "32": "icon32.png",
-      "48": "icon48.png",
-      "128": "icon128.png"
-    }
-  ,
   "icons": {
     "16": "icon16.png",
     "32": "icon32.png",

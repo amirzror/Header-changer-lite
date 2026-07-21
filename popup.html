@@ -241,8 +241,93 @@
     }
 
     /* Shorter key field, longer value field */
-    .header-name { flex: 0 1 130px; }
+    .hname-wrap { flex: 0 1 130px; position: relative; min-width: 0; }
+    .header-name { width: 100%; }
     .header-value { flex: 1 1 auto; }
+
+    /* Custom header-name dropdown (replaces the native datalist so custom
+       names can carry a pin button). */
+    .hname-dropdown {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      z-index: 20;
+      min-width: 100%;
+      width: max-content;
+      max-width: 260px;
+      max-height: 200px;
+      overflow-y: auto;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      box-shadow: var(--shadow);
+      padding: 4px;
+    }
+
+    .hname-opt {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .hname-opt:hover { background: var(--accent-soft); }
+
+    .hname-label {
+      flex: 1 1 auto;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .hname-pin {
+      flex: 0 0 auto;
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      font-size: 15px;
+      line-height: 1;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .hname-pin:hover { background: var(--accent); color: #fff; }
+
+    /* Port-rewrite (__port) status / permission notice */
+    .port-notice {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 8px 2px 0;
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+
+    .port-notice.ok { color: var(--ok); }
+    .port-notice.warn { color: var(--danger); }
+
+    .grant-btn {
+      padding: 3px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .grant-btn:hover { background: var(--accent-hover); }
 
     input[type="text"]::placeholder { color: var(--muted); }
 
@@ -308,8 +393,7 @@
   <div id="groups-container"></div>
   <button id="add-group-btn" class="add-btn">+ Add Domain Group</button>
 
-  <!-- Autocomplete sources: known header names + saved past values -->
-  <datalist id="known-headers"></datalist>
+  <!-- Value autocomplete source (header names use the custom dropdown) -->
   <datalist id="known-values"></datalist>
 
   <script src="rules.js"></script>
