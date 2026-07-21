@@ -105,6 +105,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // keep the channel open for the async response
   }
 });
+// (Re)build the global __port NAVIGATION redirect rules from the current groups.
+// These are independent of the active-tab header rules: always global, persistent,
+// and gated only by whether the user holds host permission for the domain (Chrome
+// ignores a redirect rule for a domain it can't access, so we add them regardless).
+// Serialized like reconcilePortScripts: the top-level call plus onStartup/onInstalled/
+// storage/permission events can fire near-simultaneously, and two overlapping
+// updateSessionRules calls collide ("Rule with id ... does not have a unique ID").
+let portRedirectChain = Promise.resolve();
+function refreshPortRedirects() {
+  portRedirectChain = portRedirectChain
+    .then(async () => {
+      const { groups } = await chrome.storage.local.get('groups');
+      await applyPortRedirectRules(groups || []);
+    })
+    .catch(e => console.error('refreshPortRedirects failed:', e));
+  return portRedirectChain;
+}
+
+// Apply on worker start. onStartup/onInstalled don't fire on every service-worker
+// wake (and an unpacked reload can skip them), yet session rules are cleared on
+// browser restart — so re-applying at top level is what actually guarantees the
+// navigation-redirect rule exists. It's idempotent, so running it often is fine.
+refreshPortRedirects();
+chrome.runtime.onStartup.addListener(refreshPortRedirects);
+chrome.runtime.onInstalled.addListener(refreshPortRedirects);
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.groups) refreshPortRedirects();
+});
+// A permission grant/revoke doesn't require rebuilding (Chrome re-evaluates per
+// request), but refresh anyway so state is never stale.
+chrome.permissions.onAdded.addListener(refreshPortRedirects);
+chrome.permissions.onRemoved.addListener(refreshPortRedirects);
+
 // When a specific-host permission is granted, the BACKGROUND must finish the job.
 // The popup's Grant button calls chrome.permissions.request(), whose native prompt
 // closes the popup — so any code after it resolves in the popup never runs. Here we
@@ -123,6 +156,9 @@ async function onPortHostsGranted(origins) {
   for (const h of hosts) if (!list.includes(h)) list.push(h);
   await chrome.storage.local.set({ portInjectHosts: list });
   await reconcilePortScripts();
+  // Ensure the navigation-redirect rules exist; they now fire because we hold the
+  // API-domain permission. (They're inert until permission is granted.)
+  await refreshPortRedirects();
 
   // Content scripts inject only on load, so reload tabs already open on the host.
   for (const h of hosts) {

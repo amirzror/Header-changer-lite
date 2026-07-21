@@ -33,9 +33,10 @@ the app**. The app doesn't know; it thinks it's talking to the normal address.
 
 ### Is it magic? What's the catch?
 
-- The port feature only affects calls the **page's JavaScript** makes (`fetch` / axios /
-  `XMLHttpRequest`) — the normal way web apps talk to APIs. It does **not** touch things
-  like image tags or the address bar.
+- The port feature covers the two ways you reach that domain: **calls the page's
+  JavaScript makes** (`fetch` / axios / `XMLHttpRequest` — how web apps talk to APIs)
+  **and direct visits** (typing the address / a full-page navigation). It does not touch
+  things like image or script tags.
 - You have to click **Grant** (or **Enable**) once per app site, and **reload the tab**
   for it to kick in.
 - The dev server on the new port still has to allow your app to talk to it (CORS) — the
@@ -143,7 +144,15 @@ network redirect) is to **override the page's own `fetch` and `XMLHttpRequest`**
 requires running code in the page's **MAIN world** (its real JS environment), which a
 normal "isolated world" content script can't touch.
 
-So the feature is split across two content scripts plus the background worker:
+> **Navigations are the exception.** A *top-level navigation* (typing the URL, a
+> full-page nav) isn't made by page JavaScript, so the content script can't catch it —
+> but a navigation is **not** a CORS request, so the redirect-CORS problem doesn't apply
+> to it. For that case we keep a `declarativeNetRequest` **redirect** rule scoped to
+> `resourceTypes: ['main_frame','sub_frame']` (see `rules.js#buildRulesFromGroups`). It
+> never touches `xmlhttprequest`, so it can't reintroduce the CORS breakage. Net result:
+> **fetch/XHR → in-page rewrite; direct visits → 307 redirect.**
+
+So the fetch/XHR half is split across two content scripts plus the background worker:
 
 | File | World | Job |
 |---|---|---|
@@ -167,9 +176,12 @@ want the scary "read and change all your data on all websites" prompt at install
 - The manifest declares **no static content scripts** and only
   `optional_host_permissions: ["<all_urls>"]` plus the `scripting` API permission.
 - When a group has a valid `__port`, the popup shows a **"Grant on `<current-site>`"**
-  button. It requests the host permission for **just the tab you're on**.
-- The background then registers the content scripts for **only that origin**. Nothing is
-  injected anywhere until you explicitly grant a site.
+  button. In one prompt it requests **two** things: the **app host** you're on (so the
+  content script can be injected for the fetch/XHR rewrite) **and** the **API domain**
+  itself (so the `declarativeNetRequest` navigation redirect is allowed). Both are
+  specific origins — never `<all_urls>`.
+- The background then registers the content scripts for **only that app origin** and
+  applies the navigation-redirect rule. Nothing happens until you explicitly grant.
 
 #### Lifecycle / registration (`background.js`)
 
@@ -219,17 +231,17 @@ background to reconcile before reloading).
 
 ### Limitations / things to know
 
-- **`__port` covers `fetch`/XHR only** — not top-level navigations, `<img>`/`<script>`
+- **`__port` covers `fetch`/XHR and top-level navigations** — not `<img>`/`<script>`
   subresources, `EventSource`, or WebSockets. That matches the intended use (redirecting
-  an app's API traffic).
-- **No `307` redirect row anymore.** With the in-page rewrite, the Network tab shows the
-  request going **directly** to the new port (a single `200`). That's expected — the old
-  redirect behavior is gone by design.
+  an app's API traffic and direct visits).
+- **What you see in the Network tab differs by request type.** A `fetch`/XHR call goes
+  **directly** to the new port (single `200`, no redirect row) — the in-page rewrite. A
+  **direct navigation** shows a `307` redirect to the new port — the declarativeNetRequest
+  rule. Both are expected.
 - **CORS is still the server's job.** The target port must return proper CORS headers for
-  your app's origin. The extension removes the *redirect* problem, not the server's CORS
-  responsibility.
+  your app's origin. The extension removes the *redirect* problem for XHR, not the
+  server's CORS responsibility.
 - **Reload after granting.** Content scripts inject on page load; the Grant flow reloads
   the tab for you, but an already-open tab needs a reload to pick it up.
 - A group domain like `fortimail.io` matches **all** its subdomains. Use the full host
   (`api.foo.fortimail.io`) to be precise.
-</content>
