@@ -329,6 +329,26 @@
 
     .grant-btn:hover { background: var(--accent-hover); }
 
+    /* Footer warning shown in active-tab (toggle-off) mode */
+    .footer-warning {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      padding: 10px 12px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--muted);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--danger);
+      border-radius: 10px;
+    }
+
+    .footer-warning .fw-text { flex: 1 1 200px; min-width: 0; }
+    .footer-warning strong { color: var(--danger); font-weight: 600; }
+
     input[type="text"]::placeholder { color: var(--muted); }
 
     input[type="text"]:focus {
@@ -392,6 +412,9 @@
 
   <div id="groups-container"></div>
   <button id="add-group-btn" class="add-btn">+ Add Domain Group</button>
+  <button id="add-header-flat-btn" class="add-btn" style="display:none">+ Add header</button>
+
+  <div id="footer-warning" class="footer-warning" style="display:none"></div>
 
   <!-- Value autocomplete source (header names use the custom dropdown) -->
   <datalist id="known-values"></datalist>

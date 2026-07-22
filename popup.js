@@ -1,5 +1,7 @@
 const container = document.getElementById('groups-container');
 const addGroupBtn = document.getElementById('add-group-btn');
+const addHeaderFlatBtn = document.getElementById('add-header-flat-btn');
+const footerWarning = document.getElementById('footer-warning');
 const statusBadge = document.getElementById('status');
 const saveStatus = document.getElementById('save-status');
 const knownValuesList = document.getElementById('known-values');
@@ -8,6 +10,15 @@ const optionsBtn = document.getElementById('options-btn');
 let currentTabId = null;
 let currentHost = null;
 let debounceTimeout = null;
+
+// Popup render mode, derived from the "apply to all tabs" setting:
+//   'all'    -> domain-groups UI (headers apply across every tab)
+//   'active' -> flat header list for the current tab only
+let renderMode = 'all';
+// In 'active' mode we edit a single all-sites group as a flat list; any
+// domain-specific groups are preserved here and re-appended on save so
+// switching modes never discards them.
+let hiddenGroups = [];
 
 optionsBtn.onclick = () => chrome.runtime.openOptionsPage();
 
@@ -161,19 +172,23 @@ function attachNameAutocomplete(input) {
   input.addEventListener('blur', () => setTimeout(hide, 120));
 }
 
-// 1. Resolve current active tab context
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  if (tabs && tabs[0]) {
-    const activeTab = tabs[0];
-    currentTabId = activeTab.id;
-    try {
-      currentHost = new URL(activeTab.url).hostname;
-    } catch (e) {
-      currentHost = null;
-    }
-    updateStatusBadge();
-  }
-});
+// 1. Resolve current active tab context, promisified so hydration can await it.
+function resolveTabContext() {
+  return new Promise((resolve) => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs[0]) {
+        const activeTab = tabs[0];
+        currentTabId = activeTab.id;
+        try {
+          currentHost = new URL(activeTab.url).hostname;
+        } catch (e) {
+          currentHost = null;
+        }
+      }
+      resolve();
+    });
+  });
+}
 
 // Reflect whether headers target the active tab or every tab.
 function updateStatusBadge() {
@@ -186,9 +201,88 @@ function updateStatusBadge() {
   });
 }
 
+// Render the popup body for the current mode. In 'all' mode this is the full
+// domain-groups UI; in 'active' mode it's a flat header list for the current tab.
+function renderPopup(groups, siteChanged = false) {
+  container.innerHTML = '';
+
+  if (renderMode === 'all') {
+    hiddenGroups = [];
+    let list = Array.isArray(groups) ? groups : [];
+    if (list.length === 0) list = [{ domain: '', headers: [] }];
+    list.forEach(createGroup);
+    addGroupBtn.style.display = '';
+    addHeaderFlatBtn.style.display = 'none';
+    footerWarning.style.display = 'none';
+    return;
+  }
+
+  // 'active' mode: edit a single all-sites group as a flat list; preserve any
+  // domain-specific groups so switching modes never discards them.
+  const list = Array.isArray(groups) ? groups : [];
+  const flatIndex = list.findIndex(g => !normalizeDomain(g.domain));
+  const flat = flatIndex >= 0 ? list[flatIndex] : { domain: '', headers: [] };
+  hiddenGroups = list.filter((_, i) => i !== flatIndex);
+
+  const rows = document.createElement('div');
+  rows.className = 'group-rows';
+  container.appendChild(rows);
+  const headers = Array.isArray(flat.headers) ? flat.headers : [];
+  if (headers.length === 0) {
+    createHeaderRow(rows);
+  } else {
+    headers.forEach(h => createHeaderRow(rows, h.name, h.value, h.enabled ?? true));
+  }
+
+  addGroupBtn.style.display = 'none';
+  addHeaderFlatBtn.style.display = '';
+  updateFooterWarning(siteChanged);
+}
+
+// Footer notice for active-tab mode: explains headers are ephemeral and points
+// to the all-tabs option.
+function updateFooterWarning(siteChanged = false) {
+  footerWarning.innerHTML = '';
+
+  const text = document.createElement('span');
+  text.className = 'fw-text';
+  const lead = siteChanged
+    ? '<strong>Turned off — new site.</strong> '
+    : '<strong>Active tab only.</strong> ';
+  text.innerHTML = lead +
+    'These headers apply only to the current site and are switched off when you browse ' +
+    'to a new site. To keep headers active everywhere, enable “Apply headers to all tabs”.';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'grant-btn';
+  btn.textContent = 'Open Options';
+  btn.onclick = () => chrome.runtime.openOptionsPage();
+
+  footerWarning.appendChild(text);
+  footerWarning.appendChild(btn);
+  footerWarning.style.display = 'flex';
+}
+
+addHeaderFlatBtn.onclick = () => {
+  const rows = container.querySelector('.group-rows');
+  if (rows) {
+    createHeaderRow(rows);
+    saveAndApply();
+  }
+};
+
 // 2. Hydrate popup from storage. Migrates the old flat `headers` list into a
-//    single "all sites" group the first time.
-chrome.storage.local.get(['groups', 'headers', 'valueHistory', 'savedHeaders'], (result) => {
+//    single "all sites" group the first time. Resolves tab context first so the
+//    render mode and the reset-on-new-domain check can both use currentHost.
+async function init() {
+  await resolveTabContext();
+
+  const result = await chrome.storage.local.get([
+    'groups', 'headers', 'valueHistory', 'savedHeaders',
+    'applyToAllTabs', 'lastAppliedContext',
+  ]);
+
   valueHistory = Array.isArray(result.valueHistory) ? result.valueHistory : [];
   savedHeaders = Array.isArray(result.savedHeaders) ? result.savedHeaders : [];
   fillDatalist(knownValuesList, valueHistory);
@@ -198,8 +292,33 @@ chrome.storage.local.get(['groups', 'headers', 'valueHistory', 'savedHeaders'], 
     const legacy = Array.isArray(result.headers) ? result.headers : [];
     groups = [{ domain: '', headers: legacy }];
   }
-  groups.forEach(createGroup);
-});
+
+  renderMode = result.applyToAllTabs ? 'all' : 'active';
+  updateStatusBadge();
+
+  // Reset-on-new-domain: in active-tab mode the headers were authorized by the
+  // activeTab grant for the site they were last applied to. Chrome revokes that
+  // grant on cross-origin navigation, so if we're now on a different host those
+  // headers are no longer in effect — turn every toggle off to stay honest.
+  let siteChanged = false;
+  if (renderMode === 'active') {
+    const last = result.lastAppliedContext;
+    if (last && last.host && currentHost && last.host !== currentHost) {
+      siteChanged = true;
+      groups = groups.map(g => ({
+        ...g,
+        headers: (g.headers || []).map(h => ({ ...h, enabled: false })),
+      }));
+    }
+  }
+
+  renderPopup(groups, siteChanged);
+
+  // Persist/clear the now-defunct rules so storage matches the reset UI.
+  if (siteChanged) saveAndApply();
+}
+
+init();
 
 // 3. Debounced auto-save to avoid UI lag while typing
 function triggerAutoSave() {
@@ -210,6 +329,19 @@ function triggerAutoSave() {
 
 // 4. Collect groups from the DOM
 function readGroupsFromDom() {
+  // 'active' mode: the flat list is a single all-sites group; the preserved
+  // domain-specific groups are re-appended so they survive the round-trip.
+  if (renderMode === 'active') {
+    const headers = [];
+    container.querySelectorAll('.header-row').forEach(row => {
+      const enabled = row.querySelector('.toggle-chk').checked;
+      const name = row.querySelector('.header-name').value.trim();
+      const value = row.querySelector('.header-value').value.trim();
+      if (name) headers.push({ name, value, enabled });
+    });
+    return [{ domain: '', headers }, ...hiddenGroups];
+  }
+
   const groups = [];
   container.querySelectorAll('.group').forEach(groupEl => {
     const domain = groupEl.querySelector('.group-domain').value.trim();
@@ -247,6 +379,13 @@ async function saveAndApply() {
 
     const rules = buildRulesFromGroups(groups, { tabId });
     await applyRules(rules);
+    // Remember where active-tab headers were applied so the next popup open can
+    // tell whether we've since browsed to a different site.
+    if (!applyToAllTabs) {
+      await chrome.storage.local.set({
+        lastAppliedContext: { tabId: currentTabId, host: currentHost },
+      });
+    }
     saveStatus.textContent = "Saved";
     refreshPortNotices();
   });
@@ -274,6 +413,9 @@ function updateGroupHint(groupEl) {
 
 // 6b. Port-rewrite (__port) status + permission prompt for a group.
 async function updatePortNotice(groupEl) {
+  // Flat (active-tab) rows have no enclosing .group card, and __port only ever
+  // applies to a concrete domain — so there is nothing to show there.
+  if (!groupEl) return;
   const notice = groupEl.querySelector('.port-notice');
   const domainRaw = groupEl.querySelector('.group-domain').value.trim();
   const domain = normalizeDomain(domainRaw);
