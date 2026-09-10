@@ -1,12 +1,15 @@
 # Header Changer Lite 2
 
-A small Chrome (Manifest V3) extension that does two things to the requests your
+A small Chrome (Manifest V3) extension that does three things to the requests your
 browser makes:
 
 1. **Sets HTTP request headers** on the sites you choose.
 2. **Redirects a domain's traffic to a different port** via a special `__port`
    pseudo-header (great for pointing a live web app at a local/dev backend without
    touching the app's code).
+3. **Redirects a domain's API calls to a different domain** based on hostname
+   conditions (e.g. `api.perception-point.io` → `api-internal.perception-point.io`),
+   from the popup's "Domain mapping" tab.
 
 ---
 
@@ -30,6 +33,15 @@ you're running a dev copy of that API on your machine at port `4791`. Add a head
 named `__port` with value `4791` to that domain's group, click **Grant** once, and now
 the app's calls quietly go to `https://api.example.com:4791` instead — **without editing
 the app**. The app doesn't know; it thinks it's talking to the normal address.
+
+**c) Redirect a domain's API calls to a different domain.**
+The popup has two tabs: **Headers** and **Domain mapping**. In the redirects tab, each
+rule reads *if the hostname \<equals / starts with / ends with / contains\>
+\<pattern\>, send the request to \<new domain\>*. Example: `equals
+api.perception-point.io → api-internal.perception-point.io` makes the app you enabled
+call `api-internal.perception-point.io` instead — **without editing the app**. Turn on
+the toggle, click **Grant on \<your site\>** once, reload, and the app's `fetch`/XHR
+calls are rewritten. Path, query and port are kept — only the hostname changes.
 
 ### Is it magic? What's the catch?
 
@@ -86,7 +98,7 @@ same category (client-side request modifiers), not proxies.
 
 ## Part 3 — How it works (in depth)
 
-The extension has **two independent subsystems**. They share a few helpers but solve
+The extension has **three independent subsystems**. They share a few helpers but solve
 different problems with different browser APIs.
 
 ### Subsystem A — Header modification (declarativeNetRequest)
@@ -156,8 +168,8 @@ So the fetch/XHR half is split across two content scripts plus the background wo
 
 | File | World | Job |
 |---|---|---|
-| `patch.js` | **MAIN** | Overrides `window.fetch` and `XMLHttpRequest.prototype.open`. Rewrites the port of any request whose host matches a configured `__port` domain (exact host or subdomain). Can't use `chrome.*`. |
-| `bridge.js` | **ISOLATED** | Can use `chrome.*`. Reads the groups from storage, builds a `{ domain: port }` map, and hands it to `patch.js`. |
+| `patch.js` | **MAIN** | Overrides `window.fetch` and `XMLHttpRequest.prototype.open`. Rewrites any request whose host matches a `__port` domain (exact host or subdomain) or an API-redirect rule (see Subsystem C). Can't use `chrome.*`. |
+| `bridge.js` | **ISOLATED** | Can use `chrome.*`. Reads the groups, redirect rules and master toggle from storage, builds the `{ ports, redirects }` config, and hands it to `patch.js`. |
 | `background.js` | Service worker | Decides **where** those scripts get injected and registers/unregisters them dynamically. |
 
 **Config delivery (MAIN ⇄ ISOLATED):** MAIN-world code has no `chrome.*` access, so
@@ -186,17 +198,19 @@ want the scary "read and change all your data on all websites" prompt at install
 #### Lifecycle / registration (`background.js`)
 
 - `portInjectHosts` (in `chrome.storage.local`) is the list of app origins you've
-  enabled the rewrite on.
+  enabled the rewrite on — shared by `__port` and the API redirects.
 - `reconcilePortScripts()` is the single source of truth. It:
   1. keeps only hosts you still hold permission for (prunes revoked ones),
   2. clears the extension's existing registrations,
-  3. if any enabled group has a valid `__port` **and** there's ≥1 granted host,
-     registers `hcl-bridge` (isolated) and `hcl-patch` (MAIN) for those origins,
-     `runAt: document_start`, `persistAcrossSessions: true`.
+  3. if any enabled group has a valid `__port` **or** active API-redirect rules,
+     **and** there's ≥1 granted host, registers `hcl-bridge` (isolated) and
+     `hcl-patch` (MAIN) for those origins, `runAt: document_start`,
+     `persistAcrossSessions: true`.
 - It's **serialized** (chained promises) and **self-healing** (retry once on collision)
   so overlapping triggers can't cause "Duplicate script ID".
-- It's triggered by: `onStartup`/`onInstalled`, `storage.onChanged` (groups or
-  `portInjectHosts`), and `permissions.onAdded`/`onRemoved`.
+- It's triggered by: `onStartup`/`onInstalled`, `storage.onChanged` (groups,
+  `portInjectHosts`, `redirects` or `redirectsEnabled`), and
+  `permissions.onAdded`/`onRemoved`.
 
 **The popup-closes-on-prompt gotcha (important):** Chrome's native permission prompt
 **closes the popup**, destroying its JavaScript before any code after
@@ -207,16 +221,49 @@ tabs** (content scripts only inject on page load). When the permission is *alrea
 held, no prompt shows, the popup survives, and it finishes the job itself (and asks the
 background to reconcile before reloading).
 
+### Subsystem C — API redirects (hostname rewrite in the page)
+
+Configured in the popup's **Domain mapping** tab: a master toggle plus condition rows
+(*hostname \<equals / starts with / ends with / contains\> \<pattern\> →
+\<new domain\>*). Applies **only to the `fetch`/XHR calls made by pages on sites you
+explicitly enabled** — there is deliberately no navigation redirect and no
+`declarativeNetRequest` involvement:
+
+- A DNR redirect of a fetch/XHR is an origin-changing redirect that fails CORS
+  (Subsystem B explains why). Rewriting the URL **in the page before the request goes
+  out** avoids the redirect hop entirely, so the call is a single ordinary
+  cross-origin request that the target server's normal CORS headers cover.
+- Storage: `redirects` = `[{ match, from, to, enabled }]`, `redirectsEnabled` (master
+  toggle). Rows have their own on/off toggle; toggled-off rows stay saved but aren't
+  applied. `rules.js#prepareRedirects()` validates/normalizes the entries before
+  they're shipped to the page; unusable rows are dropped (and flagged red in the popup).
+- `bridge.js` sends `{ ports, redirects }` to `patch.js` (rules only while the master
+  toggle is on); `patch.js` applies the **first matching rule's** target host, then
+  the `__port` port map against the *new* host — so a host redirect and a port
+  override compose. Path, query and explicit port are preserved. The rewrite happens
+  once per request in the page, so a rule whose target also matches its pattern is
+  just a no-op — no redirect loops.
+- **Injection/permissions:** same model as `__port`. The rewrite must run in the page
+  that makes the calls, so the popup's redirects tab shows a **"Grant on
+  \<current-site\>"** button requesting only that site's origin (`optional_host_permissions`
+  — nothing static). Granted sites are tracked in `portInjectHosts`;
+  `background.js#reconcilePortScripts()` registers `hcl-bridge`/`hcl-patch` for
+  those sites whenever a `__port` override or active redirect rules exist, and
+  unregisters otherwise. The background's `permissions.onAdded` handler finishes the
+  job (record host, register, reload matching tabs) when the prompt closes the popup.
+- Mock defaults (`DEFAULT_REDIRECTS` in `rules.js`) are seeded once on first run so
+  the tab isn't empty; edit or replace them freely.
+
 ### File map
 
 | File | Role |
 |---|---|
 | `manifest.json` | MV3 manifest. Permissions: `declarativeNetRequest`, `storage`, `activeTab`, `scripting`; optional `<all_urls>`. |
-| `popup.html` / `popup.js` | Main UI: domain groups, header rows with autocomplete, the `__port` status/grant notice. |
+| `popup.html` / `popup.js` | Main UI, two tabs: **Headers** (domain groups, header rows with autocomplete, the `__port` status/grant notice) and **Domain mapping** (redirect rules + master toggle + per-site Grant). |
 | `options.html` / `options.js` | The "apply headers to all tabs" toggle + its `<all_urls>` permission request. |
-| `background.js` | Service worker: re-applies header rules on startup; owns dynamic `__port` content-script registration. |
-| `rules.js` | Shared helpers (rule building, domain normalize/validate, port parsing, header-name validation). Loaded in the popup/options pages, `importScripts()`'d in the worker, **and** injected as part of the isolated content script. |
-| `patch.js` | MAIN-world content script — the actual `fetch`/XHR port rewrite. |
+| `background.js` | Service worker: re-applies header rules on startup; owns dynamic content-script registration for the in-page rewrite (`__port` and API redirects). |
+| `rules.js` | Shared helpers (rule building, domain normalize/validate, port parsing, header-name validation, redirect-rule normalize/validate). Loaded in the popup/options pages, `importScripts()`'d in the worker, **and** injected as part of the isolated content script. |
+| `patch.js` | MAIN-world content script — the actual `fetch`/XHR rewrite (ports + hostnames). |
 | `bridge.js` | ISOLATED-world content script — feeds the port map to `patch.js`. |
 
 ### Permissions, explained
@@ -238,9 +285,12 @@ background to reconcile before reloading).
   **directly** to the new port (single `200`, no redirect row) — the in-page rewrite. A
   **direct navigation** shows a `307` redirect to the new port — the declarativeNetRequest
   rule. Both are expected.
-- **CORS is still the server's job.** The target port must return proper CORS headers for
-  your app's origin. The extension removes the *redirect* problem for XHR, not the
-  server's CORS responsibility.
+- **Domain redirects cover `fetch`/XHR only, on sites you enabled** — typing a
+  matching domain in the address bar navigates normally (by design: no navigation
+  redirect). The rewrite applies to the first matching rule per request.
+- **CORS is still the server's job.** The target domain must return proper CORS
+  headers for your app's origin. The extension removes the *redirect* problem, not
+  the server's CORS responsibility.
 - **Reload after granting.** Content scripts inject on page load; the Grant flow reloads
   the tab for you, but an already-open tab needs a reload to pick it up.
 - A group domain like `fortimail.io` matches **all** its subdomains. Use the full host

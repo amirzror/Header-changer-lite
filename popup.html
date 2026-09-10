@@ -398,23 +398,182 @@
     }
 
     .add-btn:hover { background: var(--accent-hover); }
+
+    /* ── Tabs ── */
+    .tab-bar {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .tab-btn {
+      flex: 1 1 0;
+      padding: 7px 0;
+      font-size: 13px;
+      font-weight: 600;
+      background: var(--card);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+    }
+
+    .tab-btn.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border-color: var(--accent);
+    }
+
+    /* ── Domain mapping tab ── */
+    .rd-master {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+      padding: 9px 12px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+
+    .rd-master-label {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .switch {
+      appearance: none;
+      -webkit-appearance: none;
+      position: relative;
+      width: 36px;
+      height: 20px;
+      flex: 0 0 auto;
+      margin: 0;
+      border-radius: 999px;
+      background: var(--border);
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      transition: transform 0.2s ease;
+    }
+
+    .switch:checked { background: var(--accent); }
+    .switch:checked::after { transform: translateX(16px); }
+    .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    #redirect-rules {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .rd-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 9px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+    }
+
+    .rd-row.invalid { border-color: var(--danger); }
+
+    .rd-row.disabled { opacity: 0.55; }
+    .rd-row.disabled .rd-host,
+    .rd-row.disabled .rd-match { color: var(--muted); }
+
+    .rd-line {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .rd-match {
+      flex: 0 0 auto;
+      padding: 6px 7px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      font-size: 12px;
+      font-family: inherit;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .rd-host {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 12px;
+    }
+
+    .rd-arrow { flex: 0 0 auto; color: var(--muted); font-size: 13px; }
+
+    .rd-del {
+      flex: 0 0 auto;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      font-size: 13px;
+      line-height: 1;
+      background: transparent;
+      color: var(--muted);
+      border: none;
+    }
+
+    .rd-del:hover { background: rgba(244, 63, 94, 0.12); color: var(--danger); }
   </style>
 </head>
 <body>
   <div class="title-row">
-    <h3>Request Headers</h3>
+    <h3>Header Changer</h3>
     <button id="options-btn" class="options-btn" title="Options">&#9881;</button>
   </div>
-  <div class="header-container-wrapper">
-    <div id="status" class="status-badge">Detecting tab...</div>
-    <div id="save-status" class="save-status">Ready</div>
+
+  <div class="tab-bar">
+    <button id="tab-headers-btn" class="tab-btn active">Headers</button>
+    <button id="tab-redirects-btn" class="tab-btn">Domain mapping</button>
   </div>
 
-  <div id="groups-container"></div>
-  <button id="add-group-btn" class="add-btn">+ Add Domain Group</button>
-  <button id="add-header-flat-btn" class="add-btn" style="display:none">+ Add header</button>
+  <div id="tab-headers">
+    <div class="header-container-wrapper">
+      <div id="status" class="status-badge">Detecting tab...</div>
+      <div id="save-status" class="save-status">Ready</div>
+    </div>
 
-  <div id="footer-warning" class="footer-warning" style="display:none"></div>
+    <div id="groups-container"></div>
+    <button id="add-group-btn" class="add-btn">+ Add Domain Group</button>
+    <button id="add-header-flat-btn" class="add-btn" style="display:none">+ Add header</button>
+
+    <div id="footer-warning" class="footer-warning" style="display:none"></div>
+  </div>
+
+  <div id="tab-redirects" style="display:none">
+    <div class="rd-master">
+      <span class="rd-master-label">Redirect API calls</span>
+      <input type="checkbox" id="redirects-toggle" class="switch">
+    </div>
+
+    <div id="redirect-rules"></div>
+    <button id="add-redirect-btn" class="add-btn">+ Add redirect</button>
+
+    <div id="redirect-site-notice" class="port-notice" style="display:none"></div>
+  </div>
 
   <!-- Value autocomplete source (header names use the custom dropdown) -->
   <datalist id="known-values"></datalist>
