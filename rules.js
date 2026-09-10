@@ -166,3 +166,76 @@ async function applyPortRedirectRules(groups) {
 async function clearAllRules() {
   await applyRules([]);
 }
+
+// ── API-call redirects (in-page fetch/XHR hostname rewrite) ───────────────────
+// Storage: `redirects` = [{ match, from, to }] plus the `redirectsEnabled` master
+// toggle, managed from the popup's "Domain mapping" tab. Matching rules rewrite
+// the HOSTNAME of fetch/XHR requests made by pages on sites the user enabled —
+// in the page itself (patch.js), NOT via a declarativeNetRequest redirect: a
+// DNR redirect of a fetch/XHR is an origin-changing redirect that fails CORS
+// (same reason __port rewrites in-page). Navigations are deliberately not
+// covered.
+
+const MATCH_TYPES = ['equals', 'startsWith', 'endsWith', 'contains'];
+
+// Mock defaults seeded on first run so the tab has something to show; the user
+// is expected to replace them.
+const DEFAULT_REDIRECTS = [
+  { match: 'equals', from: 'api.perception-point.io', to: 'api-internal.perception-point.io' },
+  { match: 'startsWith', from: 'staging.perception-point.io', to: 'internal.perception-point.io' },
+  { match: 'endsWith', from: '.demo.example.com', to: 'demo-internal.example.net' },
+];
+
+// Like normalizeDomain, but KEEPS leading/trailing dots: for startsWith/endsWith/
+// contains patterns a dot is part of what the user asked to match (e.g. ends
+// with ".perception-point.io"). Strips scheme/userinfo/port/path/query.
+function normalizeDomainPattern(input) {
+  if (!input) return '';
+  let d = String(input).trim().toLowerCase();
+  d = d.replace(/^[a-z][a-z0-9+.-]*:\/\//, ''); // scheme://
+  d = d.split('/')[0].split('?')[0].split('#')[0];
+  d = d.split('@').pop();                        // strip user:pass@
+  d = d.split(':')[0];                           // strip :port
+  return d;
+}
+
+// Loose check for a match pattern: valid domains pass, but so do fragments
+// like "api." or ".example.com" that the fuzzy conditions need.
+function isValidDomainPattern(p) {
+  return !!p && p.length <= 100 && /^[-.a-z0-9]+$/.test(p);
+}
+
+function hostMatchesPattern(host, pattern, match) {
+  switch (match) {
+    case 'startsWith': return host.startsWith(pattern);
+    case 'endsWith':   return host.endsWith(pattern);
+    case 'contains':   return host.includes(pattern);
+    default:           return host === pattern;
+  }
+}
+
+// Validate + normalize redirect entries into the plain shape shipped to the
+// MAIN-world patch (which does its own string matching and has no rules.js).
+// Unusable rows are dropped so the page never sees them; rows toggled off are
+// kept in storage but not shipped. Missing `enabled` counts as on.
+function prepareRedirects(redirects) {
+  return (redirects || [])
+    .map(r => {
+      if (!r || r.enabled === false) return null;
+      const match = MATCH_TYPES.includes(r.match) ? r.match : 'equals';
+      const from = normalizeDomainPattern(r.from);
+      const to = normalizeDomain(r.to);
+      if (!isValidDomainPattern(from) || !isValidDomain(to)) return null;
+      return { match, from, to };
+    })
+    .filter(Boolean);
+}
+
+// First matching prepared rule for a hostname, or null. The rewrite happens once
+// per request in the page, so a rule whose target also matches is a no-op —
+// there is no redirect loop to guard against.
+function matchRedirect(prepared, hostname) {
+  const h = String(hostname || '').toLowerCase();
+  if (!h) return null;
+  return (prepared || []).find(r => hostMatchesPattern(h, r.from, r.match)) || null;
+}

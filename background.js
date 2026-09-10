@@ -19,9 +19,22 @@ chrome.runtime.onInstalled.addListener(reapplyGlobalRules);
 // user's app — so we inject only on origins the user has explicitly granted
 // (tracked in storage as `portInjectHosts`). Scripts are registered only while at
 // least one enabled group actually has a valid __port, so nothing is injected until
-// the feature is in use.
+// the feature is in use. The SAME registration also carries the API-redirect
+// rewrite (see rules.js) — the granted-hosts list and scripts are shared, so the
+// reconcile gate below fires for either feature.
 
 const PORT_SCRIPT_IDS = ['hcl-bridge', 'hcl-patch'];
+
+// Seed the mock default redirect rules the first time the worker runs with no
+// `redirects` key. Never overwrites a list the user has edited — including one
+// emptied by hand.
+async function seedRedirectDefaults() {
+  const { redirects } = await chrome.storage.local.get('redirects');
+  if (!Array.isArray(redirects)) {
+    await chrome.storage.local.set({ redirects: DEFAULT_REDIRECTS });
+  }
+}
+seedRedirectDefaults();
 
 function anyGroupWantsPort(groups) {
   return (groups || []).some(g => {
@@ -29,6 +42,10 @@ function anyGroupWantsPort(groups) {
     const d = normalizeDomain(g.domain);
     return d && isValidDomain(d) && getPortOverride(g.headers);
   });
+}
+
+function anyRedirectsActive(redirects, redirectsEnabled) {
+  return !!redirectsEnabled && prepareRedirects(redirects).length > 0;
 }
 
 // Serialize reconcile: several events (a grant firing permissions.onAdded plus the
@@ -61,7 +78,8 @@ function portScriptSpecs(matches) {
 }
 
 async function doReconcilePortScripts() {
-  const { groups, portInjectHosts } = await chrome.storage.local.get(['groups', 'portInjectHosts']);
+  const { groups, redirects, redirectsEnabled, portInjectHosts } =
+    await chrome.storage.local.get(['groups', 'redirects', 'redirectsEnabled', 'portInjectHosts']);
 
   // Keep only hosts we still hold permission for (the user may have revoked one).
   const hosts = Array.isArray(portInjectHosts) ? portInjectHosts : [];
@@ -80,7 +98,8 @@ async function doReconcilePortScripts() {
     return;
   }
 
-  if (!anyGroupWantsPort(groups) || granted.length === 0) return;
+  if ((!anyGroupWantsPort(groups) && !anyRedirectsActive(redirects, redirectsEnabled)) ||
+      granted.length === 0) return;
 
   const specs = portScriptSpecs(granted.map(h => `*://${h}/*`));
   try {
@@ -95,7 +114,10 @@ async function doReconcilePortScripts() {
 chrome.runtime.onStartup.addListener(reconcilePortScripts);
 chrome.runtime.onInstalled.addListener(reconcilePortScripts);
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && (changes.groups || changes.portInjectHosts)) reconcilePortScripts();
+  if (area === 'local' &&
+      (changes.groups || changes.portInjectHosts || changes.redirects || changes.redirectsEnabled)) {
+    reconcilePortScripts();
+  }
 });
 // When the permission is already held, no prompt shows and the popup survives; it
 // then awaits this so it can reload the tab only after the script is registered.

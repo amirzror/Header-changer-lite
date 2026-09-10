@@ -10,15 +10,40 @@
 // applies; the request is a single plain cross-origin call the server's normal CORS
 // headers already cover.
 //
+// The same override also rewrites HOSTNAMES for the API-redirect feature (rules from
+// the popup's "Domain mapping" tab): a matching request is pointed straight at the
+// rule's target domain, for the same CORS reason. Hostname first, then port, so a
+// __port set for the target domain applies to the redirected URL. The rewrite runs
+// once per request, so a rule whose target also matches its pattern is a no-op —
+// there is no loop.
+//
 // This world can't use chrome.* — the { domain: port } map is delivered from the
 // isolated-world bridge.js via a CustomEvent carrying a JSON string.
 (() => {
   let portMap = {};              // { "domain.com": "4791" }
+  let redirects = [];           // [{ match, from, to }] (already validated)
   let gotConfig = false;
   let resolveReady;
   const ready = new Promise(r => { resolveReady = r; });
   // Never hang the page if the bridge is silent: proceed with an empty map (no-op).
   setTimeout(() => resolveReady(), 1500);
+
+  function hostMatchesPattern(host, pattern, match) {
+    switch (match) {
+      case 'startsWith': return host.startsWith(pattern);
+      case 'endsWith':   return host.endsWith(pattern);
+      case 'contains':   return host.includes(pattern);
+      default:           return host === pattern;
+    }
+  }
+
+  function redirectTarget(hostname) {
+    const h = hostname.toLowerCase();
+    for (const r of redirects) {
+      if (hostMatchesPattern(h, r.from, r.match)) return r.to;
+    }
+    return null;
+  }
 
   // Match a host against a configured domain: exact host or a subdomain of it,
   // mirroring declarativeNetRequest's requestDomains subdomain matching.
@@ -33,11 +58,18 @@
   function rewrite(rawUrl) {
     try {
       const url = new URL(rawUrl, location.href);
+      let changed = false;
+      const target = redirectTarget(url.hostname);
+      if (target && target !== url.hostname.toLowerCase()) {
+        url.hostname = target;
+        changed = true;
+      }
       const port = portFor(url.hostname);
       if (port && url.port !== String(port)) {
         url.port = String(port);
-        return url.toString();
+        changed = true;
       }
+      if (changed) return url.toString();
     } catch (e) { /* relative/opaque/non-URL input — leave untouched */ }
     return rawUrl;
   }
@@ -49,7 +81,12 @@
     gotConfig = true;
     resolveReady();
   });
-  // Ask the bridge to (re)send the map — covers either script initializing first.
+  // Receive the API-redirect rules on their own event — the __port channel is
+  // untouched. Bridge dispatches both synchronously, so both arrive together.
+  window.addEventListener('__hcl_redirects', (e) => {
+    try { redirects = JSON.parse(e.detail) || []; } catch { redirects = []; }
+  });
+  // Ask the bridge to (re)send the config — covers either script initializing first.
   window.dispatchEvent(new CustomEvent('__hcl_request'));
 
   // ── fetch ──────────────────────────────────────────────────────────────────

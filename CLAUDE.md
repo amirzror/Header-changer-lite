@@ -18,8 +18,11 @@
 ## What this is
 
 A Chrome **Manifest V3** extension ("Header Changer Lite 2") that (1) sets HTTP request
-headers on chosen sites via `declarativeNetRequest`, and (2) redirects a domain's
-traffic to a different port via a `__port` pseudo-header. See `README.md` for the
+headers on chosen sites via `declarativeNetRequest`, (2) redirects a domain's traffic
+to a different port via a `__port` pseudo-header, and (3) rewrites the **hostname of
+`fetch`/XHR API calls** (e.g. `api.perception-point.io` → `api-internal…`) via
+condition rules in the popup's "Domain mapping" tab — in-page via `patch.js`, like
+`__port`; deliberately **no navigation redirect**. See `README.md` for the
 user-facing explanation of features and the `__port` mechanism.
 
 No build step, no framework — plain HTML + vanilla JS + DOM API. Each page loads the
@@ -32,16 +35,21 @@ shared `rules.js` then its own script.
   all-tabs mode). No static host permissions.
 - `rules.js` — **shared** helper module (loaded via `<script>` in pages and
   `importScripts()` in the worker). DNR rule building/applying, domain normalization/
-  validation, `__port` helpers, `ALL_TABS_ORIGINS`. Header rules use session-rule ids
-  `< 100000`; `__port` navigation-redirect rules use ids `>= 100000` (`PORT_RULE_ID_BASE`)
-  so the two sets are managed independently.
-- `popup.js` / `popup.html` — the toolbar popup UI (header editing).
+  validation, `__port` helpers, API-redirect rule normalize/validate
+  (`prepareRedirects`), `DEFAULT_REDIRECTS` mocks, `ALL_TABS_ORIGINS`. Header rules
+  use session-rule ids `< 100000`; `__port` navigation-redirect rules use ids
+  `>= 100000` (`PORT_RULE_ID_BASE`) so the two sets are managed independently.
+- `popup.js` / `popup.html` — the toolbar popup, **two tabs**: "Headers" (the header
+  editing UI below) and "Domain mapping" (redirect condition rows, master toggle,
+  per-site Grant).
 - `options.js` / `options.html` — options dialog; **home of the "Apply headers to all
   tabs" toggle** (`applyToAllTabs`), which requests/revokes the `<all_urls>` permission.
-- `background.js` — service worker: re-applies global rules on startup, and manages the
-  `__port` content-script registration + navigation-redirect rules.
-- `bridge.js` / `patch.js` — injected content scripts for the `__port` in-page fetch/XHR
-  rewrite (ISOLATED bridge + MAIN-world patch).
+- `background.js` — service worker: re-applies global rules on startup, and manages
+  the content-script registration (`reconcilePortScripts`) + `__port` navigation
+  rules for the in-page rewrite. Owns redirect-defaults seeding.
+- `bridge.js` / `patch.js` — injected content scripts for the in-page fetch/XHR
+  rewrite (ISOLATED bridge + MAIN-world patch); cover both `__port` ports and
+  API-redirect hostnames.
 - Icons: `icon16/32/48/128.png`. Corners are **transparent** (blue rounded-square body,
   white gear+arrow interior). Regenerate smaller sizes from `icon128.png`.
 
@@ -58,6 +66,11 @@ The `applyToAllTabs` storage flag (set only from the **options page**) picks the
 
 The popup reads `applyToAllTabs` on open and renders accordingly (`renderMode` =
 `'active'` | `'all'`).
+
+**API redirects are orthogonal to these modes** — they don't use DNR header rules at
+all. The rewrite is done in-page by `patch.js`, injected only on sites listed in
+`portInjectHosts` (per-site Grant from the popup's redirects tab), so it works the same in
+both modes.
 
 ## popup.js structure
 
@@ -79,6 +92,13 @@ The popup reads `applyToAllTabs` on open and renders accordingly (`renderMode` =
   footer reads "Turned off — new site." No new permissions — relies on `activeTab`.
 - `updateFooterWarning()` renders the active-mode footer with an "Open Options" button.
 - `updatePortNotice(groupEl)` early-returns on `null` (flat rows have no `.group` parent).
+- Tab switching: `showTab('headers'|'redirects')` toggles `#tab-headers`/`#tab-redirects`
+  (no persistence — always opens on Headers). The redirects tab has its own element
+  refs, `createRedirectRow` (per-row enabled toggle + condition select + from + → + to),
+  debounced `triggerRedirectSave` (writes `redirects` only — the background + bridge
+  react via storage events), `validateRedirectRow` (red border on unusable rows), and
+  `updateRedirectSiteNotice` (per-site Grant/Enable, mirrors the `__port` grant flow
+  but needs only the app-host origin — no DNR permission).
 
 ## Storage keys (`chrome.storage.local`)
 
@@ -87,7 +107,14 @@ The popup reads `applyToAllTabs` on open and renders accordingly (`renderMode` =
 - `applyToAllTabs` — boolean mode flag (written from options page only).
 - `lastAppliedContext` — `{ tabId, host }`; where active-tab headers were last applied,
   used for reset-on-new-domain.
-- `portInjectHosts` — app hostnames granted for `__port` content-script injection.
+- `portInjectHosts` — app hostnames granted for the in-page rewrite; the list is
+  shared by both features that use it (`__port` and API-redirect hostnames).
+- `redirects` — `[{ enabled, match:'equals'|'startsWith'|'endsWith'|'contains',
+  from, to }]`; API-redirect rules, managed from the popup's redirects tab.
+  Per-row `enabled` toggle on top of the master `redirectsEnabled`; disabled
+  rows stay in storage but aren't shipped to the page. Seeded with the mocks in
+  `DEFAULT_REDIRECTS` (rules.js) on first run — never overwritten once a list exists.
+- `redirectsEnabled` — boolean master toggle for API redirects.
 - `savedHeaders`, `valueHistory` — autocomplete UI state.
 
 ## Testing (live browser via Playwright)
@@ -140,6 +167,19 @@ Pattern that works well for the popup: seed `chrome.storage.local` (`groups`,
 
 ## Change log
 
+- **2026-09-10** — API-redirect feature, take 2 (the DNR-navigation approach from
+  earlier today is in the git stash): popup rebuilt with two tabs (Headers / API
+  Redirects); redirects rewrite fetch/XHR hostnames in-page via the existing
+  bridge/patch scripts (new `__hcl_redirects` event; `__port` channel untouched);
+  `__port` machinery (incl. its navigation-redirect rules, `portInjectHosts`,
+  `reconcilePortScripts`) deliberately unchanged — only the reconcile gate/listeners
+  were extended to also fire for redirects. Seeds `DEFAULT_REDIRECTS` mocks on first
+  run. Files: `rules.js`, `background.js`, `bridge.js`, `patch.js`, `popup.js`,
+  `popup.html`, `README.md`.
+- **2026-09-10** — Per-row enable toggle on redirect rules (on top of the master
+  `redirectsEnabled`); disabled rows persist but aren't shipped to the page
+  (`prepareRedirects` filters `enabled === false`). Files: `rules.js`, `popup.js`,
+  `popup.html`.
 - **2026-07-22** — Active-tab (toggle-OFF) popup UX: hide domain groups + "Add Domain
   Group" when `applyToAllTabs` is off (flat header list instead); reset all header
   toggles when the popup opens on a different site than headers were last applied to

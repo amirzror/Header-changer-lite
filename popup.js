@@ -7,6 +7,29 @@ const saveStatus = document.getElementById('save-status');
 const knownValuesList = document.getElementById('known-values');
 const optionsBtn = document.getElementById('options-btn');
 
+// ── Tabs: Headers / Domain mapping ────────────────────────────────────────────
+const tabHeadersBtn = document.getElementById('tab-headers-btn');
+const tabRedirectsBtn = document.getElementById('tab-redirects-btn');
+const tabHeaders = document.getElementById('tab-headers');
+const tabRedirects = document.getElementById('tab-redirects');
+
+// ── Domain mapping tab elements ───────────────────────────────────────────────
+const redirectsToggle = document.getElementById('redirects-toggle');
+const redirectRulesEl = document.getElementById('redirect-rules');
+const addRedirectBtn = document.getElementById('add-redirect-btn');
+const redirectSiteNotice = document.getElementById('redirect-site-notice');
+
+function showTab(which) {
+  const headers = which === 'headers';
+  tabHeadersBtn.classList.toggle('active', headers);
+  tabRedirectsBtn.classList.toggle('active', !headers);
+  tabHeaders.style.display = headers ? '' : 'none';
+  tabRedirects.style.display = headers ? 'none' : '';
+}
+
+tabHeadersBtn.onclick = () => showTab('headers');
+tabRedirectsBtn.onclick = () => showTab('redirects');
+
 let currentTabId = null;
 let currentHost = null;
 let debounceTimeout = null;
@@ -281,7 +304,19 @@ async function init() {
   const result = await chrome.storage.local.get([
     'groups', 'headers', 'valueHistory', 'savedHeaders',
     'applyToAllTabs', 'lastAppliedContext',
+    'redirects', 'redirectsEnabled', 'portInjectHosts',
   ]);
+
+  // Domain mapping tab: rules (mock defaults until the worker seeds storage),
+  // master toggle, and the per-site enable notice.
+  const redirectList = Array.isArray(result.redirects) ? result.redirects : DEFAULT_REDIRECTS;
+  redirectsToggle.checked = !!result.redirectsEnabled;
+  if (redirectList.length === 0) {
+    createRedirectRow();
+  } else {
+    redirectList.forEach(r => createRedirectRow(r));
+  }
+  updateRedirectSiteNotice();
 
   valueHistory = Array.isArray(result.valueHistory) ? result.valueHistory : [];
   savedHeaders = Array.isArray(result.savedHeaders) ? result.savedHeaders : [];
@@ -646,3 +681,207 @@ addGroupBtn.onclick = () => {
   groupEl.querySelector('.group-domain').focus();
   saveAndApply();
 };
+
+// ── Domain mapping tab ─────────────────────────────────────────────────────────
+// Redirect rules rewrite the HOSTNAME of fetch/XHR requests made by pages on
+// enabled sites (in-page, via patch.js — see rules.js). Managed entirely here;
+// the background re-registers the content scripts whenever `redirects` or
+// `redirectsEnabled` change in storage.
+
+let redirectDebounce = null;
+
+function readRedirectsFromDom() {
+  const out = [];
+  redirectRulesEl.querySelectorAll('.rd-row').forEach(row => {
+    out.push({
+      enabled: row.querySelector('.rd-enabled').checked,
+      match: row.querySelector('.rd-match').value,
+      from: row.querySelector('.rd-from').value.trim(),
+      to: row.querySelector('.rd-to').value.trim(),
+    });
+  });
+  return out;
+}
+
+// Red border on rows whose filled-in fields aren't usable, so a paused rule is
+// visible rather than silently ignored.
+function validateRedirectRow(row) {
+  const from = normalizeDomainPattern(row.querySelector('.rd-from').value);
+  const to = normalizeDomain(row.querySelector('.rd-to').value);
+  const bad = (!!from && !isValidDomainPattern(from)) || (!!to && !isValidDomain(to));
+  row.classList.toggle('invalid', bad);
+}
+
+function triggerRedirectSave() {
+  clearTimeout(redirectDebounce);
+  redirectDebounce = setTimeout(() => {
+    chrome.storage.local.set({ redirects: readRedirectsFromDom() });
+    updateRedirectSiteNotice();
+  }, 250);
+}
+
+function createRedirectRow(rule = { match: 'equals', from: '', to: '' }) {
+  const row = document.createElement('div');
+  row.className = 'rd-row';
+  if (rule.enabled === false) row.classList.add('disabled');
+
+  const enabledChk = document.createElement('input');
+  enabledChk.type = 'checkbox';
+  enabledChk.className = 'toggle-chk rd-enabled';
+  enabledChk.title = 'Enable or disable this redirect';
+  enabledChk.checked = rule.enabled !== false;
+  enabledChk.addEventListener('change', () => {
+    row.classList.toggle('disabled', !enabledChk.checked);
+    triggerRedirectSave();
+  });
+
+  const line1 = document.createElement('div');
+  line1.className = 'rd-line';
+
+  const matchSel = document.createElement('select');
+  matchSel.className = 'rd-match';
+  matchSel.title = 'How the hostname is matched';
+  [
+    ['equals', 'equals'],
+    ['startsWith', 'starts with'],
+    ['endsWith', 'ends with'],
+    ['contains', 'contains'],
+  ].forEach(([value, label]) => {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    matchSel.appendChild(opt);
+  });
+  matchSel.value = MATCH_TYPES.includes(rule.match) ? rule.match : 'equals';
+  matchSel.addEventListener('change', triggerRedirectSave);
+
+  const fromInput = document.createElement('input');
+  fromInput.type = 'text';
+  fromInput.className = 'rd-host rd-from';
+  fromInput.placeholder = 'from — e.g. api.perception-point.io';
+  fromInput.value = rule.from || '';
+  fromInput.setAttribute('autocomplete', 'off');
+  fromInput.addEventListener('input', () => {
+    validateRedirectRow(row);
+    triggerRedirectSave();
+  });
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.className = 'rd-del';
+  delBtn.textContent = '✕';
+  delBtn.title = 'Remove this redirect';
+  delBtn.onclick = () => {
+    row.remove();
+    triggerRedirectSave();
+  };
+
+  line1.appendChild(enabledChk);
+  line1.appendChild(matchSel);
+  line1.appendChild(fromInput);
+  line1.appendChild(delBtn);
+
+  const line2 = document.createElement('div');
+  line2.className = 'rd-line';
+
+  const arrow = document.createElement('span');
+  arrow.className = 'rd-arrow';
+  arrow.textContent = '→';
+
+  const toInput = document.createElement('input');
+  toInput.type = 'text';
+  toInput.className = 'rd-host rd-to';
+  toInput.placeholder = 'to — e.g. api-internal.perception-point.io';
+  toInput.value = rule.to || '';
+  toInput.setAttribute('autocomplete', 'off');
+  toInput.addEventListener('input', () => {
+    validateRedirectRow(row);
+    triggerRedirectSave();
+  });
+
+  line2.appendChild(arrow);
+  line2.appendChild(toInput);
+
+  row.appendChild(line1);
+  row.appendChild(line2);
+  redirectRulesEl.appendChild(row);
+  validateRedirectRow(row);
+  return row;
+}
+
+function activeRedirectCount(list) {
+  return prepareRedirects(list).length;
+}
+
+// Per-site enablement: the rewrite runs as a content script in the page that
+// MAKES the requests, so it must be turned on per app site (needs the current
+// tab's origin). Mirrors the __port Grant flow.
+async function updateRedirectSiteNotice() {
+  redirectSiteNotice.innerHTML = '';
+  redirectSiteNotice.className = 'port-notice';
+  redirectSiteNotice.style.display = 'none';
+
+  if (!redirectsToggle.checked || activeRedirectCount(readRedirectsFromDom()) === 0) return;
+
+  if (!currentHost) {
+    redirectSiteNotice.textContent =
+      'Open the site whose API calls you want rewritten, then reopen this popup to enable it there.';
+    redirectSiteNotice.className = 'port-notice warn';
+    redirectSiteNotice.style.display = 'block';
+    return;
+  }
+
+  const appOrigin = { origins: [`*://${currentHost}/*`] };
+  const hasPerm = await chrome.permissions.contains(appOrigin);
+  const { portInjectHosts } = await chrome.storage.local.get('portInjectHosts');
+  const active = hasPerm && Array.isArray(portInjectHosts) && portInjectHosts.includes(currentHost);
+
+  if (active) {
+    redirectSiteNotice.textContent = `✓ Rewriting API calls made by ${currentHost}. (Reload the tab if it was already open.)`;
+    redirectSiteNotice.className = 'port-notice ok';
+    redirectSiteNotice.style.display = 'block';
+    return;
+  }
+
+  const txt = document.createElement('span');
+  txt.textContent = `Rewrite API calls made by ${currentHost} (matching rules above)? `;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'grant-btn';
+  // "Grant" when a prompt is needed; "Enable" when the permission is already held.
+  btn.textContent = hasPerm ? `Enable on ${currentHost}` : `Grant on ${currentHost}`;
+  btn.addEventListener('click', () => {
+    // permissions.request must be the first call in the gesture handler. If a prompt
+    // is shown it closes the popup and the code below may not run — the background's
+    // permissions.onAdded handler is the safety net for that case. When the
+    // permission is already held, no prompt shows, the popup survives, and this
+    // path finishes up.
+    chrome.permissions.request(appOrigin).then(async (ok) => {
+      if (ok) {
+        const cur = (await chrome.storage.local.get('portInjectHosts')).portInjectHosts;
+        const list = Array.isArray(cur) ? cur : [];
+        if (!list.includes(currentHost)) {
+          list.push(currentHost);
+          await chrome.storage.local.set({ portInjectHosts: list });
+        }
+        await chrome.runtime.sendMessage({ type: 'reconcilePortScripts' });
+        if (currentTabId != null) chrome.tabs.reload(currentTabId);
+      }
+      updateRedirectSiteNotice();
+    });
+  });
+  redirectSiteNotice.appendChild(txt);
+  redirectSiteNotice.appendChild(btn);
+  redirectSiteNotice.className = 'port-notice warn';
+  redirectSiteNotice.style.display = 'block';
+}
+
+addRedirectBtn.onclick = () => {
+  createRedirectRow();
+  triggerRedirectSave();
+};
+
+redirectsToggle.addEventListener('change', async () => {
+  await chrome.storage.local.set({ redirectsEnabled: redirectsToggle.checked });
+  updateRedirectSiteNotice();
+});
